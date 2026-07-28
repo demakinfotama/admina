@@ -8,6 +8,7 @@ class Router
 
     public function __construct()
     {
+        $router = $this;
         require_once CONFIG_PATH . '/routes.php';
     }
 
@@ -21,8 +22,8 @@ class Router
         $requestUri    = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
         $requestMethod = $_SERVER['REQUEST_METHOD'];
 
-        $basePath    = rtrim(dirname($_SERVER['SCRIPT_NAME']), '/');
-        $requestUri  = '/' . ltrim(substr($requestUri, strlen($basePath)), '/');
+        $basePath   = rtrim(dirname($_SERVER['SCRIPT_NAME']), '/');
+        $requestUri = '/' . ltrim(substr($requestUri, strlen($basePath)), '/');
 
         foreach ($this->routes as $route) {
             if ($route['method'] === $requestMethod && $route['uri'] === $requestUri) {
