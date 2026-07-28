@@ -4,13 +4,9 @@
  * Jalankan sekali via browser: https://domain/composer-install.php
  * HAPUS FILE INI setelah instalasi berhasil!
  *
- * Keamanan: dilindungi dengan SECRET_TOKEN
+ * Token diambil dari .env: COMPOSER_INSTALL_TOKEN=xxx
  */
 
-// ============================================================
-// KONFIGURASI - Ganti token ini sebelum upload!
-// ============================================================
-define('SECRET_TOKEN', 'GANTI_TOKEN_RAHASIA_INI');
 define('BASE_PATH', __DIR__);
 
 // ============================================================
@@ -20,13 +16,39 @@ if (php_sapi_name() === 'cli') {
     exit('Run via browser only.');
 }
 
-ini_set('display_errors', 1);
+ini_set('display_errors', 0);
 ini_set('max_execution_time', 300);
 set_time_limit(300);
 
-$token   = $_GET['token'] ?? '';
-$action  = $_GET['action'] ?? 'check';
-$isValid = hash_equals(SECRET_TOKEN, $token);
+// ============================================================
+// Baca COMPOSER_INSTALL_TOKEN dari .env (manual parse,
+// tidak perlu vendor/autoload.php karena belum tentu ada)
+// ============================================================
+function readEnvToken(): string
+{
+    $envFile = BASE_PATH . '/.env';
+    if (!file_exists($envFile)) {
+        return '';
+    }
+    foreach (file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+        $line = trim($line);
+        if ($line === '' || str_starts_with($line, '#')) continue;
+        if (str_starts_with($line, 'COMPOSER_INSTALL_TOKEN=')) {
+            $value = substr($line, strlen('COMPOSER_INSTALL_TOKEN='));
+            // Hapus kutip jika ada
+            return trim($value, '"\' ');
+        }
+    }
+    return '';
+}
+
+$secretToken = readEnvToken();
+$token       = $_GET['token'] ?? '';
+$action      = $_GET['action'] ?? 'check';
+
+// Jika token di .env kosong, tampilkan pesan khusus
+$envMissing = ($secretToken === '');
+$isValid    = !$envMissing && hash_equals($secretToken, $token);
 
 // Helper: print log baris
 function logLine(string $msg, string $type = 'info'): void
@@ -122,16 +144,27 @@ function findPhpCli(): string
         </div>
         <div class="card-body">
 
-<?php if (!$isValid): ?>
+<?php if ($envMissing): ?>
+    <!-- .ENV TIDAK ADA / TOKEN BELUM DISET -->
+    <div class="alert alert-danger">
+        <strong>❌ COMPOSER_INSTALL_TOKEN belum diset!</strong><br>
+        Tambahkan baris berikut ke file <code>.env</code> Anda:
+        <pre class="mt-2 mb-0 p-2 bg-dark text-light rounded">COMPOSER_INSTALL_TOKEN=isi_token_rahasia_anda</pre>
+    </div>
+
+<?php elseif (!$isValid): ?>
     <!-- TOKEN FORM -->
-    <p class="text-muted mb-3">Masukkan <strong>SECRET_TOKEN</strong> yang sudah Anda set di file ini untuk melanjutkan.</p>
+    <p class="text-muted mb-3">
+        Masukkan nilai <code>COMPOSER_INSTALL_TOKEN</code> dari file <code>.env</code> Anda.
+    </p>
     <form method="GET">
         <div class="mb-3">
-            <label class="form-label fw-bold">Secret Token</label>
-            <input type="text" name="token" class="form-control font-monospace" placeholder="Token rahasia..." required autofocus>
+            <label class="form-label fw-bold">Installer Token</label>
+            <input type="password" name="token" class="form-control font-monospace"
+                   placeholder="Nilai COMPOSER_INSTALL_TOKEN dari .env" required autofocus>
         </div>
         <input type="hidden" name="action" value="check">
-        <button class="btn btn-primary">🔓 Verifikasi Token</button>
+        <button class="btn btn-primary">🔓 Verifikasi</button>
     </form>
 
 <?php else: ?>
@@ -154,6 +187,11 @@ function findPhpCli(): string
     if ($action === 'check') {
         logLine('=== CEK ENVIRONMENT ===');
 
+        // .env & token
+        logLine('.env file        : ' . (file_exists(BASE_PATH . '/.env') ? 'ada ✓' : 'tidak ada ✗'),
+            file_exists(BASE_PATH . '/.env') ? 'success' : 'error');
+        logLine('COMPOSER_INSTALL_TOKEN: terbaca dari .env ✓', 'success');
+
         $phpVer = PHP_VERSION;
         $phpOk  = version_compare($phpVer, '8.0', '>=');
         logLine('PHP Version      : ' . $phpVer . ($phpOk ? ' ✓' : ' ✗ (perlu >= 8.0)'), $phpOk ? 'success' : 'error');
@@ -170,13 +208,11 @@ function findPhpCli(): string
         $curlOk = function_exists('curl_init');
         logLine('cURL             : ' . ($curlOk ? 'tersedia ✓' : 'tidak tersedia'), $curlOk ? 'success' : 'warn');
 
-        // HOME / COMPOSER_HOME
         $homeEnv = getenv('HOME') ?: '';
         logLine('HOME env         : ' . ($homeEnv ?: '(kosong — akan pakai COMPOSER_HOME)'), $homeEnv ? 'success' : 'warn');
         $composerHome = getComposerHome();
         logLine('COMPOSER_HOME    : ' . $composerHome . ' ✓', 'success');
 
-        // Folder writable
         $folders = [
             BASE_PATH,
             BASE_PATH . '/vendor',
@@ -186,7 +222,7 @@ function findPhpCli(): string
         foreach ($folders as $dir) {
             $writable = is_dir($dir) ? is_writable($dir) : is_writable(dirname($dir));
             $label    = str_replace(BASE_PATH . '/', '', $dir) ?: '.';
-            logLine('Writable ' . $label . ': ' . ($writable ? 'Ya ✓' : 'Tidak ✗'), $writable ? 'success' : 'error');
+            logLine('Writable ' . $label . '  : ' . ($writable ? 'Ya ✓' : 'Tidak ✗'), $writable ? 'success' : 'error');
         }
 
         $free  = disk_free_space(BASE_PATH);
@@ -212,15 +248,14 @@ function findPhpCli(): string
         $pharPath = BASE_PATH . '/composer.phar';
 
         if (file_exists($pharPath) && filesize($pharPath) > 100000) {
-            logLine('composer.phar sudah ada (' . round(filesize($pharPath)/1024) . ' KB), skip download. ✓', 'success');
+            logLine('composer.phar sudah ada (' . round(filesize($pharPath)/1024) . ' KB), skip. ✓', 'success');
         } else {
-            if (file_exists($pharPath)) @unlink($pharPath); // hapus file rusak
+            if (file_exists($pharPath)) @unlink($pharPath);
 
             $composerUrl = 'https://getcomposer.org/composer-stable.phar';
             logLine('Mengunduh dari: ' . $composerUrl);
             $downloaded  = false;
 
-            // Coba via cURL
             if (function_exists('curl_init')) {
                 logLine('Mencoba download via cURL...');
                 $ch = curl_init($composerUrl);
@@ -246,7 +281,6 @@ function findPhpCli(): string
                 }
             }
 
-            // Fallback: file_get_contents
             if (!$downloaded && ini_get('allow_url_fopen')) {
                 logLine('Mencoba download via file_get_contents...');
                 $ctx  = stream_context_create(['http' => ['timeout' => 180, 'user_agent' => 'admina-composer-installer/1.0']]);
@@ -262,8 +296,8 @@ function findPhpCli(): string
 
             if (!$downloaded) {
                 logLine('GAGAL download otomatis!', 'error');
-                logLine('Solusi: Download manual dari https://getcomposer.org/composer-stable.phar', 'warn');
-                logLine('lalu upload ke: ' . BASE_PATH . '/composer.phar', 'warn');
+                logLine('Download manual: https://getcomposer.org/composer-stable.phar', 'warn');
+                logLine('Upload ke: ' . BASE_PATH . '/composer.phar', 'warn');
             }
         }
 
@@ -285,7 +319,7 @@ function findPhpCli(): string
         } else {
             $pharPath = BASE_PATH . '/composer.phar';
             if (!file_exists($pharPath) || filesize($pharPath) < 100000) {
-                logLine('composer.phar tidak ditemukan / rusak! Jalankan dulu ⬇️ Download Composer.', 'error');
+                logLine('composer.phar tidak ditemukan / rusak! Jalankan dulu ⬇️ Download.', 'error');
             } else {
                 $phpCli = findPhpCli();
 
@@ -294,18 +328,15 @@ function findPhpCli(): string
                 } else {
                     logLine('PHP CLI          : ' . $phpCli . ' ✓', 'success');
 
-                    // Set COMPOSER_HOME ke folder writable di dalam project
                     $composerHome = getComposerHome();
                     logLine('COMPOSER_HOME    : ' . $composerHome . ' ✓', 'success');
 
-                    // Set HOME juga jika belum ada
                     $homeEnv = getenv('HOME');
                     if (!$homeEnv) {
                         putenv('HOME=' . $composerHome);
                         logLine('HOME env         : di-set ke ' . $composerHome, 'info');
                     }
 
-                    // Bangun perintah dengan env vars
                     $cmd = sprintf(
                         'cd %s && COMPOSER_HOME=%s HOME=%s %s composer.phar install --no-dev --optimize-autoloader --no-interaction 2>&1',
                         escapeshellarg(BASE_PATH),
@@ -324,9 +355,9 @@ function findPhpCli(): string
                         $line = trim($line);
                         if (!$line) continue;
                         $type = 'info';
-                        if (preg_match('/error|fatal|fail/i', $line))         $type = 'error';
-                        elseif (preg_match('/warning|deprecat/i', $line))      $type = 'warn';
-                        elseif (preg_match('/install|generat|writing/i', $line)) $type = 'success';
+                        if (preg_match('/error|fatal|fail/i', $line))            $type = 'error';
+                        elseif (preg_match('/warning|deprecat/i', $line))         $type = 'warn';
+                        elseif (preg_match('/install|generat|writing/i', $line))  $type = 'success';
                         logLine($line, $type);
                     }
 
@@ -337,7 +368,7 @@ function findPhpCli(): string
                         logLine('🧹 Lanjut: Cleanup Temp → 🗑️ Hapus File Ini', 'warn');
                     } else {
                         logLine('❌ Instalasi gagal (exit code: ' . $result['code'] . ')', 'error');
-                        logLine('Coba jalankan 🔍 Cek Environment untuk diagnosa.', 'warn');
+                        logLine('Coba 🔍 Cek Environment untuk diagnosa.', 'warn');
                     }
                 }
             }
@@ -345,12 +376,11 @@ function findPhpCli(): string
     }
 
     // ========================================================
-    // ACTION: CLEANUP (hapus temp files)
+    // ACTION: CLEANUP
     // ========================================================
     elseif ($action === 'cleanup') {
         logLine('=== CLEANUP TEMPORARY FILES ===');
 
-        // Hapus composer.phar
         $pharPath = BASE_PATH . '/composer.phar';
         if (file_exists($pharPath)) {
             @unlink($pharPath);
@@ -359,10 +389,8 @@ function findPhpCli(): string
             logLine('composer.phar tidak ada, skip.', 'info');
         }
 
-        // Hapus folder composer-home
         $composerHome = BASE_PATH . '/storage/composer-home';
         if (is_dir($composerHome)) {
-            // Hapus rekursif
             $it  = new RecursiveDirectoryIterator($composerHome, RecursiveDirectoryIterator::SKIP_DOTS);
             $itr = new RecursiveIteratorIterator($it, RecursiveIteratorIterator::CHILD_FIRST);
             foreach ($itr as $f) {
@@ -378,12 +406,11 @@ function findPhpCli(): string
     }
 
     // ========================================================
-    // ACTION: DELETE (self-delete file installer)
+    // ACTION: DELETE (self-delete)
     // ========================================================
     elseif ($action === 'delete') {
         logLine('=== HAPUS FILE INSTALLER ===');
-        $self = __FILE__;
-        if (@unlink($self)) {
+        if (@unlink(__FILE__)) {
             logLine('composer-install.php berhasil dihapus ✓', 'success');
             logLine('Installer sudah tidak bisa diakses lagi.', 'success');
             echo '</div>';
@@ -391,7 +418,7 @@ function findPhpCli(): string
             echo '</div></div></div></body></html>';
             exit;
         } else {
-            logLine('Gagal hapus otomatis. Hapus manual file: composer-install.php via cPanel File Manager.', 'error');
+            logLine('Gagal hapus otomatis. Hapus manual via cPanel File Manager.', 'error');
         }
     }
 
@@ -400,7 +427,6 @@ function findPhpCli(): string
 
     <div class="alert alert-warning mt-3 mb-0 small">
         ⚠️ <strong>Keamanan:</strong> Segera hapus file <code>composer-install.php</code> setelah instalasi berhasil!
-        Gunakan tombol <strong>🗑️ Hapus File Ini</strong> atau hapus manual via cPanel File Manager.
     </div>
 
 <?php endif; ?>
